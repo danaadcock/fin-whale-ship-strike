@@ -1,0 +1,776 @@
+---
+title: "NAFW Ship Strike Risk Code"
+output: html_document
+date: "2025-07-29"
+author: "Dana Louise Adcock"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Bathymetry of Study Area - SNE
+```{r}
+library(ncdf4)
+library(raster)
+
+# Load
+file <- "path\\gebco_2024_n41.23_s40.76_w-71.91_e-70.64.tif"
+r <- raster(file)
+
+# Define box bounds
+extent_box <- extent(-71.91, -70.64, 40.76, 41.23)  # lon_min, lon_max, lat_min, lat_max
+r_crop <- crop(r, extent_box)
+
+# Remove land
+r_ocean <- mask(r_crop, r_crop < 0, maskvalue = FALSE)
+
+# Average ocean depth
+mean_depth <- cellStats(r_ocean, stat = 'mean', na.rm = TRUE)
+cat(sprintf("Average ocean depth: %.2f meters\n", mean_depth))
+
+#Range
+range_depth <- cellStats(r_ocean, stat = 'range', na.rm = TRUE)
+cat(sprintf("Range of ocean depth: %.2f meters\n", range_depth))
+
+```
+## Bathymetry of Study Area - NYB
+```{r}
+library(ncdf4)
+library(raster)
+
+# Load
+file <- "path\\gebco_2024_n39.88_s39.77_w-73.21_e-73.1.tif"
+r <- raster(file)
+
+# Define box bounds
+extent_box <- extent(-73.21, -73.1, 39.77, 39.88)  # lon_min, lon_max, lat_min, lat_max
+r_crop <- crop(r, extent_box)
+
+# Remove land
+r_ocean <- mask(r_crop, r_crop < 0, maskvalue = FALSE)
+
+# Average ocean depth
+mean_depth <- cellStats(r_ocean, stat = 'mean', na.rm = TRUE)
+cat(sprintf("Average ocean depth: %.2f meters\n", mean_depth))
+
+#Range
+range_depth <- cellStats(r_ocean, stat = 'range', na.rm = TRUE)
+cat(sprintf("Range of ocean depth: %.2f meters\n", range_depth))
+
+```
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(readr)
+library(lubridate)
+library(ggplot2)
+library(viridis)
+library(tidyr)
+library(DescTools)
+library(boot)
+
+# Set the folder path containing the CSV files
+folder_path <- "path"
+
+# Get the list of CSV files in the folder
+csv_files <- list.files(folder_path, pattern = "\\.csv$", full.names = TRUE)
+
+# Initialize an empty data frame to store combined results
+combined_data <- data.frame()
+
+# Loop through each CSV file
+for (file_path in csv_files) {
+  data <- read_csv(file_path, col_names = TRUE, col_types = cols(
+    State = col_character(),  
+    Period = col_factor(levels = c("Day", "Night")),
+    Duration = col_double()
+  )) %>%
+    select(State, Period, Duration)
+
+  # Remove rows with NA values
+  data <- data %>%
+    filter(!is.na(State) & !is.na(Period) & !is.na(Duration))
+
+  # Combine the data
+  combined_data <- bind_rows(combined_data, data)
+}
+
+# Ensure 'Period' and 'State' are factors for correct grouping
+combined_data <- combined_data %>%
+  mutate(Period = factor(Period, levels = c("Day", "Night")),
+         State = factor(State, levels = c("F", "EF", "T", "R", "SU", "S")))
+
+# Replace state labels for clarity
+combined_data <- combined_data %>%
+  mutate(State = recode(State,
+                        "F" = "Feeding",
+                        "EF" = "Exploratory Foraging",
+                        "T" = "Traveling",
+                        "R" = "Resting",
+                        "SU" = "Surface",
+                        "S" = "Unknown"))
+
+# Calculate the total duration spent in each state within each period
+proportions <- combined_data %>%
+  group_by(Period, State) %>%
+  summarise(Total_Duration = sum(Duration), .groups = 'drop') %>%
+  group_by(Period) %>%
+  mutate(Proportion = Total_Duration / sum(Total_Duration),
+         Percentage = Proportion * 100,
+         Display_Label = ifelse(Percentage < 1, "*", paste0(round(Percentage, 1), "%"))) %>%
+  select(Period, State, Proportion, Percentage, Display_Label)
+
+# Create a bar graph to show proportions based on duration
+ggplot(proportions, aes(x = Period, y = Proportion, fill = State)) +
+  geom_bar(stat = "identity", position = "fill", color = "black", size = 1) +  
+  scale_fill_viridis_d(option = "D") + 
+  scale_y_continuous(labels = scales::percent, expand = expansion(mult = c(0, 0.05))) +
+  labs(
+    title = "Behavioral State Diel Trends",
+    x = "Period",
+    y = "Proportion of Total Duration",
+    fill = "Behavioral State"
+  ) +
+  theme_classic() +
+  theme(
+    plot.title = element_text(size = 18, face = "bold"),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    axis.text = element_text(size = 12),                  
+    legend.title = element_text(size = 14),               
+    legend.text = element_text(size = 12),                
+    legend.position = "right"
+  ) +
+  geom_text(
+    aes(label = Display_Label),
+    position = position_fill(vjust = 0.5),
+    color = "white",
+    size = 4
+  ) 
+
+# Create a contingency table
+contingency_table <- combined_data %>%
+  group_by(Period, State) %>%
+  summarise(State_Count = n(), .groups = 'drop') %>%
+  spread(key = Period, value = State_Count, fill = 0)
+
+# Transpose to match expected format
+chi_table <- as.table(as.matrix(contingency_table[, c("Day", "Night")]))
+rownames(chi_table) <- contingency_table$State
+
+# Chi-square test
+chi_square_result <- chisq.test(chi_table)
+print(chi_square_result)
+
+# Cramer's V (effect size)
+cramers_v <- CramerV(chi_table)
+cat("Cramer's V:", cramers_v, "\n")
+
+# Bootstrapping Cramer's V confidence interval
+bootstrap_cramersv <- function(data, indices) {
+  sampled_data <- data[indices, ]
+  tbl <- table(sampled_data$Period, sampled_data$State)
+  return(CramerV(tbl))
+}
+
+boot_result <- boot(combined_data, statistic = bootstrap_cramersv, R = 1000)
+ci_cramersv <- boot.ci(boot_result, type = "perc")
+
+cat("95% CI for Cramer's V:", ci_cramersv$percent[4:5], "\n")
+
+# Total counts by period (needed for CI calculation)
+total_counts <- combined_data %>%
+  group_by(Period) %>%
+  summarise(Total = n())
+
+# Pairwise tests with confidence intervals
+pairwise_results <- combined_data %>%
+  group_by(State) %>%
+  do({
+    state_data <- .
+    tbl <- table(state_data$Period)
+    
+    # If both Day and Night are present, do the test
+    if (all(c("Day", "Night") %in% names(tbl))) {
+      total_day <- total_counts$Total[total_counts$Period == "Day"]
+      total_night <- total_counts$Total[total_counts$Period == "Night"]
+      
+      count_day <- tbl["Day"]
+      count_night <- tbl["Night"]
+      
+      test_result <- prop.test(x = c(count_day, count_night),
+                               n = c(total_day, total_night),
+                               correct = FALSE)
+      
+      data.frame(State = unique(state_data$State),
+                 X_squared = test_result$statistic,
+                 p_value = test_result$p.value,
+                 CI_low_Day = test_result$conf.int[1],
+                 CI_high_Day = test_result$conf.int[2])
+    } else {
+      data.frame(State = unique(state_data$State),
+                 X_squared = NA,
+                 p_value = NA,
+                 CI_low_Day = NA,
+                 CI_high_Day = NA)
+    }
+  })
+
+# Bonferroni adjustment
+pairwise_results <- pairwise_results %>%
+  mutate(Adjusted_p_value = p.adjust(p_value, method = "bonferroni"))
+
+print(pairwise_results)
+```
+
+# Mixed Effects Model - State and Depth
+```{r}
+# Load required libraries
+library(lme4)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(lmerTest)
+library(afex)
+library(easystats)
+library(MuMIn)
+library(viridis)
+library(ggpubr)
+library(AICcmodavg)
+
+# Load all CSV files from the folder
+folder_path <- "path"
+file_list <- list.files(path = folder_path, pattern = "\\.csv$", full.names = TRUE)
+
+# Read and combine all files, ensuring proper column types
+all_data <- lapply(file_list, function(file) {
+  data <- read_csv(file, col_types = cols(State = col_character()))
+  data <- mutate_all(data, as.character)
+  data$Individual <- basename(file)  # Use file name as individual identifier
+  
+  # Remove the first two rows from the data
+  data <- slice(data, -c(1, 2))  # Removes first and second rows
+
+  # Add "group" prefix to the basename
+  data$GroupID <- paste0("group", basename(file))
+  return(data)
+})
+
+# Combine all data frames into a single data frame
+data <- bind_rows(all_data)
+
+#Data Preparation
+# Ensure 'Period' is treated as a factor (Day, Night, Twilight)
+data$Period <- factor(data$Period, levels = c("Day", "Night"))
+data$State <- factor(data$State, levels = c('F', 'EF', 'S', 'SU', 'T', 'R'))
+data$Dive_Max = as.numeric(data$Dive_Max)
+
+# Remove "SU" from the State column
+data <- data %>%
+  filter(State != "SU")
+
+# Set same Individuals
+data <- data %>%
+  mutate(Individual = case_when(
+    Individual %in% c("sun_bp23_205a_divestates_datetime.csv", "sun_bp23_213c_divestates_datetime.csv") ~ "match1",
+    Individual %in% c("sun_bp23_205d_divestates_datetime.csv", "sun_bp23_206b_divestates_datetime.csv") ~ "match2",
+    Individual %in% c("sun_bp23_206c_divestates_datetime.csv", "sun_bp23_206f_divestates_datetime.csv") ~ "match3",
+    Individual %in% c("sun_bp23_212a_divestates_datetime.csv", "sun_bp23_212c_divestates_datetime.csv") ~ "match4",
+    Individual %in% c("sun_bp24_205b_divestates_datetime.csv", "sun_bp24_205c_divestates_datetime.csv", "sun_bp24_207a_states_datetime.csv") ~ "match5",
+    TRUE ~ as.factor(Individual)
+  ))
+
+# Set Pairs
+data <- data %>%
+  mutate(GroupID = case_when(
+    GroupID %in% c("groupsun_bp23_205c_divestates_datetime.csv", "groupsun_bp23_205d_divestates_datetime.csv") ~ "group1",
+    GroupID %in% c("groupsun_bp23_213a_divestates_datetime.csv", "groupsun_bp23_213b_divestates_datetime.csv") ~ "group2",
+    GroupID %in% c("groupsun_bp24_204a_divestates_datetime.csv", "groupsun_bp24_204b_divestates_datetime.csv") ~ "group3",
+    GroupID %in% c("groupsun_bp24_207a_divestates_datetime.csv", "groupsun_bp24_207b_divestates_datetime.csv") ~ "group4",
+    TRUE ~ as.factor(GroupID)
+  ))
+
+#Fit mixed-effects models for each state using the adjusted duration
+model_depth <- lmer(Dive_Max ~ State + (1 | Individual) + (1 | GroupID), data = data)
+summary(model_depth)
+anova(model_depth)
+
+# homogeneity of variances
+plot(model_depth)
+
+### log transformation
+# log(x+1) transformation
+data <- mutate(data, log_Dive_Max = log(Dive_Max + 1))
+
+logmodel_depth <- lmer(log_Dive_Max ~ State + (1 | Individual) + (1 | GroupID), data = data)
+summary(logmodel_depth)
+anova (logmodel_depth)
+plot(logmodel_depth) #homogeneity of variance is better!
+
+# normality of the residuals
+qqnorm(residuals(model_depth))
+
+qqnorm(residuals(logmodel_depth))
+
+# effect size
+omega_squared(logmodel_depth)
+
+#RSquared
+r.squaredGLMM(logmodel_depth)
+
+#confidence intervals
+confint(logmodel_depth, method = "profile")
+
+#AIC comparison
+# Null model (only random effects)
+null_model <- lmer(log_Dive_Max ~ 1 + (1 | Individual) + (1 | GroupID), data = data)
+
+# Model with no GroupID
+model_no_group <- lmer(log_Dive_Max ~ State + (1 | Individual), data = data)
+
+# Model with no Individual
+model_no_indiv <- lmer(log_Dive_Max ~ State + (1 | GroupID), data = data)
+
+#full model
+logmodel_depth <- lmer(log_Dive_Max ~ State + (1 | Individual) + (1 | GroupID), data = data)
+
+AIC(null_model, model_no_group, model_no_indiv, logmodel_depth)
+
+aictab(list(null_model, model_no_group, model_no_state, logmodel_depth),
+       modnames = c("Null", "No Group", "No Indiv", "Full Model"))
+
+#Use afex to plot stats
+afexplotdur <- afex_plot(logmodel_depth, 
+                         x = "State", 
+                         id = "Individual", 
+                         dodge = 0.4, 
+                         point_arg = list(size = 5, pch = 21), 
+                         factor_levels = list(State = c("Feeding", "Exploratory Foraging", "Unknown", "Travel","Rest"))) + 
+  labs(y = "log(depth + 1)", x = "State", face = "bold") +
+  theme_pubr(14, x.text.angle = 45) + 
+  theme(legend.position = "none", 
+    axis.text.x = element_text(face = "bold")
+  )
+
+# Manually modify the plot to ensure 'State' is mapped to fill
+afexplotdur <- afexplotdur + 
+  aes(fill = State) +  
+  scale_fill_manual(values = c("Feeding" = "#440154FF", "Exploratory Foraging" = "#414487FF", "Travel" = "#2A788EFF","Rest" = "#22A884FF", "Unknown" = "#ffcf20FF"), name = "State") 
+
+# Print the plot
+print(afexplotdur)
+
+# Get model means and confidence intervals
+afex1 <- afex_plot(logmodel_depth, x = "State", id = "Individual", return = "data")
+#Back transform
+exp(afex1$means$y) - 1
+#[1]41.128563 26.607531 14.768882  8.350878  7.444541
+exp(afex1$means$lower.CL) - 1
+#32.095676 20.628333 10.453745  6.327463  5.622940
+exp(afex1$means$upper.CL) - 1
+#52.626817 34.239690 20.709722 10.933043  9.767161
+```
+
+# Mixed Effects Model - Period and Depth
+```{r}
+# Load required libraries
+library(lme4)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(lmerTest)
+library(afex)
+library(easystats)
+library(MuMIn)
+library(viridis)
+library(ggpubr)
+
+# Load all CSV files from the folder
+folder_path <- "path"
+file_list <- list.files(path = folder_path, pattern = "\\.csv$", full.names = TRUE)
+
+# Read and combine all files, ensuring proper column types
+all_data <- lapply(file_list, function(file) {
+  data <- read_csv(file, col_types = cols(State = col_character()))
+  data <- mutate_all(data, as.character)  # Convert all columns to character
+  data$Individual <- basename(file)  # Use file name as individual identifier
+  
+  # Remove the first two rows from the data
+  data <- slice(data, -c(1, 2))  # Removes first and second rows
+
+  # Add "group" prefix to the basename
+  data$GroupID <- paste0("group", basename(file))
+  return(data)
+})
+
+# Combine all data frames into a single data frame
+data <- bind_rows(all_data)
+
+#Data Preparation
+# Ensure 'Period' is treated as a factor (Day, Night, Twilight)
+data$Period <- factor(data$Period, levels = c("Day", "Night"))
+data$State <- factor(data$State, levels = c('F', 'EF', 'S', 'SU', 'T', 'R'))
+data$Dive_Max = as.numeric(data$Dive_Max)
+
+data <- data %>%
+  filter(!is.na(Period))
+
+# Set same Individuals
+data <- data %>%
+  mutate(Individual = case_when(
+    Individual %in% c("sun_bp23_205a_divestates_datetime.csv", "sun_bp23_213c_divestates_datetime.csv") ~ "match1",
+    Individual %in% c("sun_bp23_205d_divestates_datetime.csv", "sun_bp23_206b_divestates_datetime.csv") ~ "match2",
+    Individual %in% c("sun_bp23_206c_divestates_datetime.csv", "sun_bp23_206f_divestates_datetime.csv") ~ "match3",
+    Individual %in% c("sun_bp23_212a_divestates_datetime.csv", "sun_bp23_212c_divestates_datetime.csv") ~ "match4",
+    Individual %in% c("sun_bp24_205b_divestates_datetime.csv", "sun_bp24_205c_divestates_datetime.csv", "sun_bp24_207a_states_datetime.csv") ~ "match5",
+    TRUE ~ as.factor(Individual)
+  ))
+
+# Set Pairs
+data <- data %>%
+  mutate(GroupID = case_when(
+    GroupID %in% c("groupsun_bp23_205c_divestates_datetime.csv", "groupsun_bp23_205d_divestates_datetime.csv") ~ "group1",
+    GroupID %in% c("groupsun_bp23_213a_divestates_datetime.csv", "groupsun_bp23_213b_divestates_datetime.csv") ~ "group2",
+    GroupID %in% c("groupsun_bp24_204a_divestates_datetime.csv", "groupsun_bp24_204b_divestates_datetime.csv") ~ "group3",
+    GroupID %in% c("groupsun_bp24_207a_divestates_datetime.csv", "groupsun_bp24_207b_divestates_datetime.csv") ~ "group4",
+    TRUE ~ as.factor(GroupID)
+  ))
+
+#Fit mixed-effects models for each state using the adjusted duration
+model_depth2 <- lmer(Dive_Max ~ Period + (1 | Individual) + (1 | GroupID), data = data)
+summary(model_depth2)
+anova(model_depth2)
+
+# homogeneity of variances
+plot(model_depth2)
+
+### log transformation
+# log(x+1) transformation
+data <- mutate(data, log_Dive_Max = log(Dive_Max + 1))
+
+logmodel_depth2 <- lmer(log_Dive_Max ~ Period + (1 | Individual) + (1 | GroupID), data = data)
+summary(logmodel_depth2)
+anova (logmodel_depth2)
+plot(logmodel_depth2) #homogeneity of variance is better!
+
+# normality of the residuals
+qqnorm(residuals(model_depth2))
+
+qqnorm(residuals(logmodel_depth2))
+
+# effect size
+omega_squared(logmodel_depth2)
+
+#RSquared
+r.squaredGLMM(logmodel_depth2)
+
+#confidence intervals
+confint(logmodel_depth2, method = "profile")
+
+#AIC comparison
+# Null model — only random effects
+null_model2 <- lmer(log_Dive_Max ~ 1 + (1 | Individual) + (1 | GroupID), data = data)
+
+# Random effects with fixed effect Period
+logmodel_depth2 <- lmer(log_Dive_Max ~ Period + (1 | Individual) + (1 | GroupID), data = data)
+
+# Group removed
+model_no_group2 <- lmer(log_Dive_Max ~ Period + (1 | Individual), data = data)
+
+# Individual removed
+model_no_indiv2 <- lmer(log_Dive_Max ~ Period + (1 | GroupID), data = data)
+
+AIC(null_model2, model_no_group2, model_no_indiv2, logmodel_depth2, extra)
+
+model_list2 <- list(
+  Null = null_model2,
+  NoGroup = model_no_group2,
+  NoIndividual = model_no_indiv2,
+  FullModel = logmodel_depth2
+)
+
+aictab(model_list2, sort = TRUE)
+
+#Use afex to plot stats
+afexplotdepth <- afex_plot(logmodel_depth2, 
+                         x = "Period", 
+                         id = "Individual", 
+                         dodge = 0.4, 
+                         point_arg = list(size = 5, pch = 21), 
+                         factor_levels = list(State = c("Day","Night"))) + 
+  labs(y = "log(depth + 1)", x = "Period", face = "bold") +
+  theme_pubr(14, x.text.angle = 45) + 
+  theme(legend.position = "none", 
+    axis.text.x = element_text(face = "bold")
+  )
+
+afexplotdepth <- afexplotdepth + 
+  aes(fill = Period, color = Period) +  # Map both fill and color to 'Period'
+  scale_fill_manual(values = c("Day" = "white", "Night" = "grey"), name = "Period") +
+  scale_color_manual(values = c("Day" = "black", "Night" = "black"))
+
+# Print the plot
+print(afexplotdepth)
+
+# Get model means and confidence intervals
+afex1 <- afex_plot(logmodel_depth2, x = "Period", id = "Individual", return = "data")
+#Back transform
+exp(afex1$means$y) - 1
+#[1] 8.383134 5.550364
+```
+
+#Time spent at depth
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(stringr)
+library(purrr)
+library(viridis)
+
+folder_path <- "path/depth bins"
+
+# Helper: read one CSV and add an ID column 
+read_depth_csv <- function(fp) {
+  read.csv(fp, header = TRUE) |>
+    select(Depth_Lower, Depth_Upper, Time_Spent_sec) |>
+    mutate(ID = tools::file_path_sans_ext(basename(fp)))
+}
+
+# Combine files
+combined_data <- list.files(folder_path, pattern = "\\.csv$", full.names = TRUE) |>
+  map_dfr(read_depth_csv)
+
+#set individuals
+combined_data <- combined_data %>%
+  mutate(ID = case_when(
+    ID %in% c("bp23_205a_depthtimes", "bp23_213c_depthtimes") ~ "match1",
+    ID %in% c("bp23_205d_depthtimes", "bp23_206b_depthtimes") ~ "match2",
+    ID %in% c("bp23_206c_depthtimes", "bp23_206f_depthtimes") ~ "match3",
+    ID %in% c("bp23_212a_depthtimes", "bp23_212c_depthtimes") ~ "match4",
+    ID %in% c("bp24_205b_depthtimes", "bp24_205c_depthtimes", "bp24_207a_depthtimes") ~ "match5",
+    TRUE ~ as.factor(ID)
+  ))
+
+# Per‑individual proportions
+indiv_summary <- combined_data |>
+  group_by(ID, Depth_Lower, Depth_Upper) |>
+  summarise(Total_Time_Spent = sum(Time_Spent_sec), .groups = "drop") |>
+  group_by(ID) |>
+  mutate(Proportion = Total_Time_Spent / sum(Total_Time_Spent)) |>
+  ungroup()
+
+indiv_summary <- indiv_summary %>%
+  mutate(region = case_when(
+    ID %in% c("bp24_209a_depthtimes", "bp24_209d_depthtimes", "bp24_210a_depthtimes", "bp24_210d_depthtimes") ~ "Individual (New York Bight)",
+    TRUE ~ "Individual (Southern New England)"
+  ))
+
+# Overall proportions (all IDs pooled)
+overall_summary <- combined_data |>
+  group_by(Depth_Lower, Depth_Upper) |>
+  summarise(Total_Time_Spent = sum(Time_Spent_sec), .groups = "drop") |>
+  mutate(ID = "Overall",
+         Proportion = Total_Time_Spent / sum(Total_Time_Spent))
+
+# Combine data
+plot_data <- bind_rows(indiv_summary, overall_summary) |>
+  mutate(across(c(Depth_Lower, Depth_Upper), ~ -.x))
+
+# Plot
+plot_data %>%
+  mutate(Line = if_else(ID == "Overall", "Overall", "Individual"),
+         Colour_Group = case_when(
+           ID == "Overall" ~ "Overall",
+           region == "Individual (Southern New England)" ~ "Individual (Southern New England)",
+           region == "Individual (New York Bight)" ~ "Individual (New York Bight)"
+         )) %>%
+  ggplot(aes(
+    x = Depth_Lower,
+    y = Proportion,
+    colour = Colour_Group,
+    alpha = Line,
+    group = ID
+  )) +
+  geom_line(size = 1.1) +
+  geom_point(size = 2) +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_colour_manual(
+  values = c(
+    "Overall" = "black",
+    "Individual (Southern New England)" = "#22A884FF",
+    "Individual (New York Bight)" = "#ffcf20FF"
+  )
+) +
+  scale_alpha_manual(values = c(Overall = 1, Individual = 0.35)) +
+  guides(alpha = "none") +
+  labs(
+    x = "Depth (m)",
+    y = "Proportion of Total Time",
+    colour = "Region"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+  axis.title = element_text(size = 18),
+  legend.position = c(0.5, 0.8),
+  legend.justification = c(0, 1),
+  legend.background = element_rect(fill = alpha('white', 0.7))
+)
+
+```
+
+#Map of GPS and AIS with windfarm development
+```{r}
+library(dplyr)
+library(readr)
+library(purrr)
+library(leaflet)
+library(viridis)
+library(mapview)
+library(sf) 
+library(htmlwidgets)
+library(terra)
+
+#Read 2023 data
+csv_2023 <- list.files(
+  path = "path",
+  pattern = "\\.csv$",
+  full.names = TRUE
+)
+
+data_2023 <- map_dfr(csv_2023, ~read_csv(.x) %>% mutate(source = basename(.x)))
+
+# Add manual 2023 locations
+manual_2023 <- tibble(
+  Longitude = c(-70.7326, -70.8007, -70.8011, -70.8357, -70.766128),
+  Latitude = c(41.08056, 41.06859, 41.09212, 41.10371, 41.092221),
+  source = c("bp23_205d", "bp23_207b", "bp23_207c", "bp23_212a", "bp23_213c")
+)
+
+data_2023 <- bind_rows(data_2023, manual_2023)
+
+#Read 2024 data
+csv_2024 <- list.files(
+  path = "path",
+  pattern = "\\.csv$",
+  full.names = TRUE
+)
+
+data_2024 <- map_dfr(csv_2024, ~read_csv(.x, col_names = FALSE) %>% mutate(source = basename(.x)))
+data_2024 <- data_2024 %>%
+  mutate(
+    Latitude = X5,
+    Longitude = X6
+  )
+
+# Add manual 2024 locations
+manual_2024 <- tibble(
+  Longitude = c(-71.913, -73.146203),
+  Latitude = c(40.867, 39.883242),
+  source = c("bp24_205d", "bp24_209d")
+)
+
+data_2024 <- bind_rows(data_2024, manual_2024)
+
+# --- Combine all data ---
+all_data <- bind_rows(data_2023, data_2024) %>%
+  arrange(source)
+
+all_data <- all_data %>%
+  mutate(
+    Longitude = as.numeric(Longitude),
+    Latitude = as.numeric(Latitude)
+  )
+
+all_data <- all_data %>%
+  mutate(region = case_when(
+    source %in% c("bp24_209a_0198609_240727151641.csv", "bp24_209d", "bp24_210a_0198613_240728160424.csv", "bp24_210d_0198614_240729000859.csv") ~ "New York Bight",
+    TRUE ~ "Southern New England"
+  ))
+
+# Generate colors by source
+source_colors <- c("Southern New England" = "#22A884FF",
+    "New York Bight" = "#ffcf20FF")
+
+# Load rasters
+r1 <- rast("C:\\Users\\dladcock\\OneDrive - Syracuse University\\Documents\\ArcGIS\\Projects\\MyProject2\\TankerVesselTransit.tif")
+r2 <- rast("C:\\Users\\dladcock\\OneDrive - Syracuse University\\Documents\\ArcGIS\\Projects\\MyProject2\\CargoVesselTransit.tif")
+
+r1[r1 == 0] <- NA  # or some threshold to mask low-count areas
+r2[r2 == 0] <- NA  # or some threshold to mask low-count areas
+
+#downsample
+r1_small <- aggregate(r1, fact = 2, fun = mean)
+r1_proj <- project(r1_small, "EPSG:3857")
+
+r2_small <- aggregate(r2, fact = 2, fun = mean)
+r2_proj <- project(r2_small, "EPSG:3857")
+
+# Combine min/max for a shared color scale
+combined_range <- range(c(values(r1_proj), values(r2_proj)), na.rm = TRUE)
+
+# Define a common palette
+shared_pal <- colorNumeric(
+  palette = viridis(256),
+  domain = combined_range,
+  na.color = "transparent"
+)
+
+shapefile_path <- "path\\offshorewindoutlines.shp"
+shape_data <- st_read(shapefile_path)
+
+# Transform to WGS84 (longitude/latitude)
+shape_data <- st_transform(shape_data, crs = 4326)
+
+sources <- unique(all_data$source)
+
+# Initialize map
+m <- leaflet() %>%
+  addProviderTiles(providers$Esri.WorldGrayCanvas) %>%
+  addScaleBar(position = "topright", 
+              options = scaleBarOptions(maxWidth = 200,imperial = FALSE))%>%
+  addPolygons(
+    data = shape_data,
+    color = "black",
+    weight = 2,
+    fillOpacity = 0.2,
+    group = "Shapefile Layer") %>%
+
+  # Add both rasters with the shared palette
+  addRasterImage(r1_proj, colors = shared_pal, opacity = 0.6, group = "Vessel Count A") %>%
+  addRasterImage(r2_proj, colors = shared_pal, opacity = 0.6, group = "Vessel Count B") %>%
+  addLegend(pal = shared_pal, values = combined_range, title = "Vessel Transit Count") 
+sources <- unique(all_data$source)
+
+for (s in sources) {
+  df <- all_data %>% filter(source == s)
+  region_label <- df$region[1]
+  color <- source_colors[[region_label]]
+
+  m <- m %>%
+    addCircleMarkers(
+      data = df,
+      lng = ~Longitude, lat = ~Latitude,
+      label = ~paste("Region:", region),
+      color = color,
+      radius = 4,
+      fillOpacity = 1,
+      stroke = FALSE,
+      group = s
+    ) %>%
+    addPolylines(
+      data = df,
+      lng = ~Longitude, lat = ~Latitude,
+      color = color,
+      weight = 4,
+      opacity = 0.9,
+      group = s
+    )
+}
+
+m
+```
+
