@@ -1,0 +1,5 @@
+﻿Tag_ID,UTC_Date,UTC_Time,Latitude,Longitude,LQ,HDOP,CNR,Sats,TimeOn(s),eRes,TempDeg,MinVolt,Curr(mA),ErrorRadius,SemiMajor,SemiMinor,Orientation
+6883:198608,7/25/2023,16:29:21,41.05624,-70.7959,,,,,,,,,,,,,
+6883:198608,7/25/2023,16:34:15,41.02317,-70.83332,B,,,,,,,,,11760,139040,994,95
+,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,
