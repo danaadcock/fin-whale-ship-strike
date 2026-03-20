@@ -366,11 +366,11 @@ print(afexplotdur)
 afex1 <- afex_plot(logmodel_depth, x = "State", id = "Individual", return = "data")
 #Back transform
 exp(afex1$means$y) - 1
-#[1]41.128563 26.607531 14.768882  8.350878  7.444541
+
 exp(afex1$means$lower.CL) - 1
-#32.095676 20.628333 10.453745  6.327463  5.622940
+
 exp(afex1$means$upper.CL) - 1
-#52.626817 34.239690 20.709722 10.933043  9.767161
+
 ```
 
 # Mixed Effects Model - Period and Depth
@@ -518,7 +518,6 @@ print(afexplotdepth)
 afex1 <- afex_plot(logmodel_depth2, x = "Period", id = "Individual", return = "data")
 #Back transform
 exp(afex1$means$y) - 1
-#[1] 8.383134 5.550364
 ```
 
 #Time spent at depth
@@ -634,7 +633,7 @@ library(sf)
 library(htmlwidgets)
 library(terra)
 
-#Read 2023 data
+#Read 2023 GPS data
 csv_2023 <- list.files(
   path = "path",
   pattern = "\\.csv$",
@@ -652,7 +651,7 @@ manual_2023 <- tibble(
 
 data_2023 <- bind_rows(data_2023, manual_2023)
 
-#Read 2024 data
+#Read 2024 GPS data
 csv_2024 <- list.files(
   path = "path",
   pattern = "\\.csv$",
@@ -696,8 +695,8 @@ source_colors <- c("Southern New England" = "#22A884FF",
     "New York Bight" = "#ffcf20FF")
 
 # Load rasters
-r1 <- rast("C:\\Users\\dladcock\\OneDrive - Syracuse University\\Documents\\ArcGIS\\Projects\\MyProject2\\TankerVesselTransit.tif")
-r2 <- rast("C:\\Users\\dladcock\\OneDrive - Syracuse University\\Documents\\ArcGIS\\Projects\\MyProject2\\CargoVesselTransit.tif")
+r1 <- rast("path\\TankerVesselTransit.tif")
+r2 <- rast("path\\CargoVesselTransit.tif")
 
 r1[r1 == 0] <- NA  # or some threshold to mask low-count areas
 r2[r2 == 0] <- NA  # or some threshold to mask low-count areas
@@ -719,12 +718,6 @@ shared_pal <- colorNumeric(
   na.color = "transparent"
 )
 
-shapefile_path <- "path\\offshorewindoutlines.shp"
-shape_data <- st_read(shapefile_path)
-
-# Transform to WGS84 (longitude/latitude)
-shape_data <- st_transform(shape_data, crs = 4326)
-
 sources <- unique(all_data$source)
 
 # Initialize map
@@ -732,14 +725,6 @@ m <- leaflet() %>%
   addProviderTiles(providers$Esri.WorldGrayCanvas) %>%
   addScaleBar(position = "topright", 
               options = scaleBarOptions(maxWidth = 200,imperial = FALSE))%>%
-  addPolygons(
-    data = shape_data,
-    color = "black",
-    weight = 2,
-    fillOpacity = 0.2,
-    group = "Shapefile Layer") %>%
-
-  # Add both rasters with the shared palette
   addRasterImage(r1_proj, colors = shared_pal, opacity = 0.6, group = "Vessel Count A") %>%
   addRasterImage(r2_proj, colors = shared_pal, opacity = 0.6, group = "Vessel Count B") %>%
   addLegend(pal = shared_pal, values = combined_range, title = "Vessel Transit Count") 
