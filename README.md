@@ -2,4 +2,4 @@ Corresponding code and data for "Diel patterns in shallow-water foraging put top
 
 All date times are in EDT.
 
-Please address questions to corresponding author Dana Adcock (dladcock@syr.edu).
+Please address questions to the corresponding author.
